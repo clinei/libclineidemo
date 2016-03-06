@@ -1,7 +1,5 @@
 module app.main;
 
-bool wireframe;
-
 extern(C) nothrow
 {
 	import derelict.glfw3.glfw3;
@@ -15,9 +13,6 @@ extern(C) nothrow
 					case GLFW_KEY_ESCAPE:
 						glfwSetWindowShouldClose(window, true);
 						break;
-					case GLFW_KEY_W:
-						wireframe = !wireframe;
-						break;
 					default:
 						break;
 				}
@@ -27,6 +22,8 @@ extern(C) nothrow
 		}
 	}
 }
+
+enum bool checkErrors = false;
 
 void main()
 {
@@ -58,6 +55,8 @@ void main()
 
 	// Reload required after context creation
 	DerelictGL3.reload();
+	glEnable(GL_MULTISAMPLE);
+	glfwWindowHint(GLFW_SAMPLES, 16);
 
 	// Set the callback for keyboard events, in this case, closing on ESC
 	glfwSetKeyCallback(window, &keyCallback);
@@ -89,9 +88,6 @@ void main()
 	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * GLfloat.sizeof, null);
 	glEnableVertexAttribArray(0);
 
-	// Unbind the VAO
-	glBindVertexArray(0);
-
 	void checkShaderCompileError(GLuint shader)
 	{
 		enum BufferSize = 512;
@@ -107,7 +103,6 @@ void main()
 		}
 	}
 
-	// Set up the vertex shader
 	static const(char*)[] str2src(string str)
 	{
 		import std.array : split;
@@ -124,7 +119,8 @@ void main()
 	}
 	vs.glShaderSource(1, vsSrc.ptr, null);
 	vs.glCompileShader();
-	checkShaderCompileError(vs);
+	static if (checkErrors)
+		checkShaderCompileError(vs);
 
 	// Set up the fragment shader
 	auto fsSrc = str2src(import("shaders/fs.glsl"));
@@ -135,7 +131,9 @@ void main()
 	}
 	fs.glShaderSource(1, fsSrc.ptr, null);
 	fs.glCompileShader();
-	checkShaderCompileError(fs);
+	static if (checkErrors)
+		checkShaderCompileError(fs);
+
 
 	void checkProgramLinkError(GLuint program)
 	{
@@ -157,7 +155,10 @@ void main()
 	pr.glAttachShader(vs);
 	pr.glAttachShader(fs);
 	pr.glLinkProgram();
-	checkProgramLinkError(pr);
+	static if (checkErrors)
+		checkProgramLinkError(pr);
+
+	glUseProgram(pr);
 
 	import core.time : MonoTime;
 	auto prev = MonoTime.currTime.ticks;
@@ -166,17 +167,44 @@ void main()
 	auto targetDelta = tps / fps;
 	long lag;
 
-	import std.experimental.rational : rational;
-	auto start = rational(-1);
-	auto end = rational(1);
-	auto speed = rational(1, 2 ^^ 0);
+	import gfm.math.vector : Vector;
+	alias Coord = Vector!(GLfloat, 2);
+	auto bz1 = Coord(-1, 0);
+	auto bz2 = Coord(-0.5, 1);
+	auto bz3 = Coord(0.5, -1);
+	auto bz4 = Coord(1, 0);
+
+	auto start = Coord(-1, 0);
+	auto end = Coord(1, 1);
+	import std.experimental.math.rational : rational;
+	auto speed = rational(1, 2 ^^ 1);
 	bool reversed;
 
-	import std.experimental.rational : Rational;
-	auto progress = Rational!(ulong, false)(0, tps);
+	import std.experimental.math.rational : Rational;
+	auto progress = Rational!false(0, tps);
 
 	while(!glfwWindowShouldClose(window))
 	{
+
+		// Clear
+		glClearColor(0.2, 0.3, 0.3, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+
+		/+ Only one target, no need to rebind
+		glUseProgram(pr);
+		glBindVertexArray(vao);
+
+		glBindBuffer(GL_ARRAY_BUFFER, vbo);
+		+/
+		glBufferData(GL_ARRAY_BUFFER, vertices.sizeof, vertices.ptr,  GL_STREAM_DRAW);
+
+		glDrawArrays(GL_TRIANGLES, 0, 3);
+// 		glBindVertexArray(0);
+
+		glfwSwapBuffers(window);
+
+		glfwPollEvents();
+
 		auto curr = MonoTime.currTime.ticks;
 		auto delta = curr - prev;
 		lag += delta;
@@ -206,11 +234,20 @@ void main()
 
 			if (0 < progress && progress < 1)
 			{
-				import std.experimental.easing;
-				auto precisioned = progress.atPrecision(1_000);
-				auto terpd = ease!(power!3)(start, end, precisioned);
-// 				float terpd = 0.5;
-				vertices[6] = cast(float)terpd;
+				import std.experimental.anim.easing;
+				static if (false)
+				{
+					auto precisioned = progress.atPrecision(1_000);
+					auto terpd = easeOut!(power!3)(start, end - start, cast(real)precisioned);
+				}
+				else
+				{
+					auto bz = [bz1, bz2, bz3, bz4];
+					import std.experimental.geom;
+					auto terpd = bezier(bz, easeCombined!(power!5)(cast(real)progress));
+				}
+				vertices[6] = cast(GLfloat)terpd[0];
+				vertices[7] = cast(GLfloat)terpd[1];
 			}
 			else if (progress >= 1)
 			{
@@ -223,33 +260,6 @@ void main()
 
 			lag -= targetDelta;
 		}
-
-		glfwPollEvents();
-
-		// Clear
-		glClearColor(0.2, 0.3, 0.3, 1);
-		glClear(GL_COLOR_BUFFER_BIT);
-
-		if(wireframe)
-		{
-			glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-		}
-		else
-		{
-			glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-		}
-
-		// Draw the blue triangle
-		glUseProgram(pr);
-		glBindVertexArray(vao);
-
-		glBindBuffer(GL_ARRAY_BUFFER, vbo);
-		glBufferData(GL_ARRAY_BUFFER, vertices.sizeof, vertices.ptr,  GL_STREAM_DRAW);
-
-		glDrawArrays(GL_TRIANGLES, 0, 3);
-		glBindVertexArray(0);
-
-		glfwSwapBuffers(window);
 
 		prev = curr;
 	}
